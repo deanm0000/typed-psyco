@@ -1,6 +1,98 @@
 # typed-psyco
 
-A helper to psycopg 3 that type annotates SQL statements with Pydantic models automatically from a live PostgreSQL database.
+A helper to psycopg 3 that type annotates SQL statements with Pydantic models from a live PostgreSQL database.
+
+## Motivation
+
+The goal is to keep SQL, parameter types, and result types together, so a type
+checker can check how a query is called and how its results are used.
+
+In FastAPI, it is convenient to inject a cursor into a route. Ideally, executing
+a typed SQL object would be enough for the type checker to know the result type:
+
+```python
+@router.get("/")
+async def root(cur: CUR):
+    await cur.execute(sql_object)
+    res = await cur.fetchall()
+```
+
+These are illustrative alternatives, not APIs provided by this library; `CUR`
+and `CONN` stand for application-defined FastAPI dependency annotations.
+Psycopg calls its cursor methods `fetchone()` and `fetchall()`. This library uses
+`fetch_one()` and `fetch_all()` to distinguish its query helpers from those methods.
+
+The problem is that a type checker cannot change the cursor's statically known
+row type based on whichever SQL object was most recently executed. A custom
+cursor subclass could instead make `execute()` return a cursor with the query's
+result type:
+
+```python
+@router.get("/")
+async def root(generic_cursor: CUR):
+    cur = await generic_cursor.execute(sql_object)
+    res = await cur.fetchall()
+```
+
+Python allows rebinding a variable to an object of a different type at runtime,
+but a type checker would reject assigning the differently typed cursor back to
+the dependency parameter with its declared type. The separate name `cur` lets
+it infer the returned cursor's type instead.
+
+Although psycopg's `execute()` already returns the cursor, I find this
+assignment pattern awkward and unfamiliar; it would not be obvious to me why
+capturing the return value is necessary. That is why I did not choose this
+design. It would also still need a typed query object carrying the result and
+parameter types, just as this library's `SQL` subclass does. Subclassing `SQL`
+is not the only way to carry those types: a generic wrapper holding a psycopg
+`SQL` object and its model could do that too.
+
+Another option would be to generate only row factories and inject a connection:
+
+```python
+@router.get("/")
+async def root(conn: CONN):
+    async with conn.cursor(row_factory=this_qry_factory) as cur:
+        await cur.execute(this_qry)
+        res = await cur.fetchall()
+```
+
+Here, the programmer must keep `this_qry_factory` paired with `this_qry`. A type
+checker can know what the factory returns without knowing whether the SQL
+actually matches it. In my opinion, that largely defeats the purpose of typing
+the query. Bundling the factory and SQL into a tuple would put them together,
+but callers would still need to pass `this_qry[0]` and `this_qry[1]` separately,
+and could change the query reference in one place without changing the other.
+
+Instead, this library puts the fetch helpers on the typed SQL object. Callers
+pass in their injected cursor, and the query object keeps the SQL and its
+generated types paired.
+
+### Incremental adoption
+
+Subclassing psycopg's `SQL` also lets you adopt this library incrementally.
+Generated model and parameter annotations are optional at runtime:
+
+```python
+from typed_psyco import SQL
+
+myqry = SQL("select * from tbl")
+
+async def example(cur):
+    await cur.execute(myqry)
+    return await cur.fetchall()
+```
+
+The unannotated query remains a psycopg SQL object and works as-is with existing
+cursor execution and fetching. If you already have a file full of definitions
+such as `qry1 = SQL(...)` and `qry2 = SQL(...)`, you can start by changing
+`from psycopg.sql import SQL` to `from typed_psyco import SQL`, leaving those
+definitions and their existing execution code unchanged.
+
+Run `get_sql_types` at your convenience to add generated result models and
+parameter types; it is not required before running the queries. Once generated,
+the query helpers provide typed results without having to manage a separate
+SQL object and row factory.
 
 ## Install and author queries
 
@@ -36,8 +128,9 @@ get_user = SQL("SELECT id, name FROM users WHERE id = %s", GetUserQuery, tuple[i
 ```
 
 SQL/Python formatting may change the layout. Generated models subclass Pydantic
-`BaseModel` and include an `unpack()` method returning their fields as a typed tuple.
-Use SQL aliases for duplicate result column names.
+`BaseModel` and include an `unpack()` method in the class definition, returning
+their fields as a typed tuple in query-column order. Use SQL aliases for duplicate
+result column names.
 
 ```python
 async def example(cursor):
@@ -46,10 +139,47 @@ async def example(cursor):
     users = await get_user.fetch_all(cursor, (42,))
 ```
 
-`fetch_one` raises `LookupError` when no row is returned. Both helpers validate
-tuple, dictionary, and namedtuple rows into the model, and accept existing model
-instances. Typed constructor arguments let type checkers infer result/parameter
-types. Generation is a development step, not a runtime database requirement.
+You can also unpack a result directly:
+
+```python
+id, name = (await get_user.fetch_one(cur, (42,))).unpack()
+```
+
+### When a query returns no rows
+
+`fetch_one()` raises `LookupError` rather than returning `None`. This is an
+opinionated choice: in my use cases, the overwhelming majority of calls expect
+a result, and I would otherwise follow them with `assert res is not None`.
+Raising keeps the successful return type as the generated model, without an
+optional-result check before accessing fields or calling `unpack()`. Individual
+fields can still be nullable.
+
+If no result is an expected case, handle it explicitly with `try`/`except`:
+
+```python
+try:
+    user = await get_user.fetch_one(cur, (42,))
+except LookupError:
+    print("No matching user")
+else:
+    print(user.name)
+```
+
+`fetch_all()` returns an empty list when there are no rows. Its return type
+remains `list[GetUserQuery]` even when empty, so no optional-result check is
+needed. To handle that case explicitly, check the list rather than catching a
+no-result exception:
+
+```python
+users = await get_user.fetch_all(cur, (42,))
+if not users:
+    print("No matching users")
+```
+
+Both helpers validate tuple, dictionary, and namedtuple rows into the model,
+and accept existing model instances. Typed constructor arguments let type
+checkers infer result/parameter types. Generation is a development step, not a
+runtime database requirement.
 
 ## Configuration
 
