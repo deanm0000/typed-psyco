@@ -64,9 +64,49 @@ the query. Bundling the factory and SQL into a tuple would put them together,
 but callers would still need to pass `this_qry[0]` and `this_qry[1]` separately,
 and could change the query reference in one place without changing the other.
 
-Instead, this library puts the fetch helpers on the typed SQL object. Callers
+This library puts fetch helpers on the typed SQL object. Callers
 pass in their injected cursor, and the query object keeps the SQL and its
-generated types paired.
+generated types paired. Alternatively, its connection subclasses pair the
+query and row factory automatically through `exc_cur()`.
+
+### Executed cursor contexts
+
+`Connection` and `AsyncConnection` subclass psycopg's corresponding connection
+classes. Their `exc_cur()` helper creates a cursor, executes the typed `SQL`
+statement on context entry, and yields the executed cursor:
+
+```python
+from pydantic import BaseModel
+from typed_psyco import SQL, AsyncConnection, Connection
+
+class User(BaseModel):
+    id: int
+    name: str
+
+get_user = SQL("SELECT id, name FROM users WHERE id = %s", User, tuple[int])
+
+async def users_async(conn_str: str) -> list[User]:
+    async with await AsyncConnection.connect(conn_str) as conn:
+        async with conn.exc_cur(get_user, (42,), prepare=True, binary=True) as cur:
+            return await cur.fetchall()
+
+def users_sync(conn_str: str) -> list[User]:
+    with Connection.connect(conn_str) as conn:
+        with conn.exc_cur(get_user, (42,)) as cur:
+            return cur.fetchall()
+```
+
+Use `async with conn.exc_cur(...)` directly, without awaiting `exc_cur()`.
+Both helpers accept `query`, `params=None`, keyword-only `prepare=None`, and
+keyword-only `binary=None`, forwarding the execution options to the cursor.
+Parameter values are checked against the SQL object's parameter type.
+As with psycopg's `execute()`, omitting parameters or passing `None` is allowed.
+
+When the query has a model, the cursor uses `psycopg.rows.class_row(model)` and
+its fetch methods return that model type. Without a model, it uses the
+connection's default row factory, equivalent to `cursor(row_factory=None)`.
+The cursor closes on context exit, including execution or block errors; the
+connection remains open. Transaction handling is unchanged.
 
 ### Incremental adoption
 

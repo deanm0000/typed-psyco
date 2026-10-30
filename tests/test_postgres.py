@@ -9,11 +9,18 @@ from uuid import uuid4
 import psycopg
 import pytest
 from psycopg.sql import SQL, Identifier
+from pydantic import BaseModel
 
+from typed_psyco import SQL as TypedSQL
+from typed_psyco import AsyncConnection, Connection
 from typed_psyco.get_sql_types import generate, write_result
 from typed_psyco.introspection import inspect_queries
 
 pytestmark = pytest.mark.postgres
+
+
+class ConnectionRow(BaseModel):
+    id: int
 
 
 @pytest.fixture
@@ -180,3 +187,35 @@ async def test_live_async_fetch(database, config, monkeypatch):
                 assert (await module.q.fetch_all(cur, (1,)))[0] == row
     finally:
         sys.modules.pop("models", None)
+
+
+@pytest.mark.parametrize("binary", [None, False, True])
+def test_live_connection_cursor(database, binary):
+    conn_str, _ = database
+    query = TypedSQL("SELECT %s::int AS id", ConnectionRow, tuple[int])
+    with Connection.connect(conn_str, row_factory=psycopg.rows.dict_row) as conn:
+        with conn.exc_cur(query, (42,), prepare=True, binary=binary) as cur:
+            assert cur.fetchall() == [ConnectionRow(id=42)]
+        assert cur.closed
+        assert not conn.closed
+        with conn.exc_cur(TypedSQL("SELECT 1 AS id")) as raw:
+            assert raw.fetchall() == [{"id": 1}]
+        assert raw.closed
+        assert conn.row_factory is psycopg.rows.dict_row
+
+
+@pytest.mark.parametrize("binary", [None, False, True])
+async def test_live_async_connection_cursor(database, binary):
+    conn_str, _ = database
+    query = TypedSQL("SELECT %s::int AS id", ConnectionRow, tuple[int])
+    async with await AsyncConnection.connect(
+        conn_str, row_factory=psycopg.rows.dict_row
+    ) as conn:
+        async with conn.exc_cur(query, (42,), prepare=True, binary=binary) as cur:
+            assert await cur.fetchall() == [ConnectionRow(id=42)]
+        assert cur.closed
+        assert not conn.closed
+        async with conn.exc_cur(TypedSQL("SELECT 1 AS id")) as raw:
+            assert await raw.fetchall() == [{"id": 1}]
+        assert raw.closed
+        assert conn.row_factory is psycopg.rows.dict_row
