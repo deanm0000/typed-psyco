@@ -10,7 +10,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import psycopg
-from sqlfluff.core.errors import SQLFluffUserError
 
 from .config import Config
 from .generation import discover, render
@@ -56,6 +55,8 @@ def generate(
         models_module=config.import_module(),
         old_models=old_models,
         directory=config.target_file.parent,
+        use_sqlfluff=config.sqlfluff,
+        use_ruff=config.ruff,
     )
     return GenerateResult(
         rendered.source, rendered.models_source, rendered.errors, rendered.successful
@@ -99,6 +100,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.add_argument(
             f"--{name}", help=f"Overrides TYPED_PSYCO_{name.upper().replace('-', '_')}"
         )
+    for name in ("sqlfluff", "ruff"):
+        parser.add_argument(
+            f"--{name}",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=(
+                f"Use {name} if installed (default: enabled); "
+                f"overrides TYPED_PSYCO_{name.upper()}"
+            ),
+        )
     args = parser.parse_args(argv)
     try:
         config = Config.from_settings(**vars(args))
@@ -128,7 +139,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         SyntaxError,
         psycopg.Error,
         subprocess.CalledProcessError,
-        SQLFluffUserError,
     ) as error:
         print(
             f"Generation failed: {_redact(str(error), config.conn_str)}",

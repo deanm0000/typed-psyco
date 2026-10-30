@@ -25,6 +25,8 @@ class Config:
     conn_str: str = field(repr=False)
     new_file: Path | None = None
     models_module: str | None = None
+    sqlfluff: bool = True
+    ruff: bool = True
 
     @property
     def output_file(self) -> Path:
@@ -37,6 +39,8 @@ class Config:
             conn_str=self.conn_str,
             new_file=self.new_file.expanduser().resolve() if self.new_file else None,
             models_module=self.models_module,
+            sqlfluff=self.sqlfluff,
+            ruff=self.ruff,
         )
         if not config.conn_str.strip():
             raise ValueError("conn-str must not be empty")
@@ -91,6 +95,8 @@ class Config:
         conn_str: str | None = None,
         new_file: str | None = None,
         models_module: str | None = None,
+        sqlfluff: bool | None = None,
+        ruff: bool | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> Config:
         env = os.environ if environ is None else environ
@@ -116,6 +122,20 @@ class Config:
         connection = setting("CONN_STR", conn_str, True)
         output = setting("NEW_FILE", new_file)
         module = setting("MODELS_MODULE", models_module)
+
+        def boolean_setting(name: str, argument: bool | None) -> bool:
+            if argument is not None:
+                return argument
+            value = setting(name, None)
+            if value is None:
+                return True
+            normalized = value.strip().lower()
+            if normalized in ("1", "true", "yes", "on"):
+                return True
+            if normalized in ("0", "false", "no", "off"):
+                return False
+            raise ValueError(f"TYPED_PSYCO_{name} must be a boolean (true or false)")
+
         assert target is not None and models is not None and connection is not None
         return cls(
             Path(target),
@@ -123,4 +143,6 @@ class Config:
             connection,
             Path(output) if output is not None else None,
             module,
+            boolean_setting("SQLFLUFF", sqlfluff),
+            boolean_setting("RUFF", ruff),
         ).validated()

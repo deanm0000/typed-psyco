@@ -118,3 +118,38 @@ def test_relative_and_home_paths(config, monkeypatch):
     assert actual.target_file == config.target_file
     assert actual.models_file == config.models_file
     assert "dbname=test" not in repr(actual)
+
+
+@pytest.mark.parametrize("name", ["sqlfluff", "ruff"])
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("", True),
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("on", True),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        (" OFF ", False),
+    ],
+)
+def test_formatter_settings(config, name, value, expected):
+    kwargs = settings(config)
+    env = {f"TYPED_PSYCO_{name.upper()}": value}
+    actual = Config.from_settings(**kwargs, environ=env)
+    assert getattr(actual, name) is expected
+    kwargs[name] = not expected
+    actual = Config.from_settings(**kwargs, environ=env)
+    assert getattr(actual, name) is not expected
+    assert getattr(actual.validated(), name) is not expected
+
+
+@pytest.mark.parametrize("name", ["sqlfluff", "ruff"])
+def test_invalid_formatter_setting(config, name):
+    env = {f"TYPED_PSYCO_{name.upper()}": "maybe"}
+    with pytest.raises(ValueError, match="must be a boolean"):
+        Config.from_settings(**settings(config), environ=env)
+    actual = Config.from_settings(**settings(config), **{name: False}, environ=env)
+    assert getattr(actual, name) is False

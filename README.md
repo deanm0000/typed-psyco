@@ -194,6 +194,8 @@ No `.env` file is loaded automatically.
 | `--conn-str`      | `TYPED_PSYCO_CONN_STR`      | Yes                              |
 | `--new-file`      | `TYPED_PSYCO_NEW_FILE`      | No                               |
 | `--models-module` | `TYPED_PSYCO_MODELS_MODULE` | If import inference is ambiguous |
+| `--[no-]sqlfluff` | `TYPED_PSYCO_SQLFLUFF`     | No; enabled if installed         |
+| `--[no-]ruff`     | `TYPED_PSYCO_RUFF`         | No; enabled if installed         |
 
 ```sh
 export TYPED_PSYCO_TARGET_FILE=./db_sql.py
@@ -220,6 +222,44 @@ its unrelated application imports.
 
 Use environment variables instead of CLI connection strings to avoid placing
 credentials in shell history or command-line process listings.
+
+### Optional formatting
+
+SQLFluff and Ruff are optional, not required dependencies. Each is used
+independently when installed in the Python environment running `get_sql_types`;
+generation still works if either or both are missing. To install both:
+
+```sh
+pip install 'typed-psyco[formatting]'
+```
+
+SQLFluff can pretty up your SQL statements using local SQLFluff configuration,
+with PostgreSQL/raw templating and a restricted set of layout/capitalisation
+rules. The column-reordering rule `ST06` (`structure.column_order`) is explicitly
+disabled, even if enabled in local configuration: selected-column order must
+stay aligned with the generated model and its `unpack()` tuple.
+
+The generated Python is not necessarily formatted according to normal Python
+formatting conventions, so, when available, Ruff formats both the rewritten
+query module and generated models. It runs `ruff format --isolated` for
+consistent formatting independent of local Ruff configuration; this formats
+the code but does not promise to satisfy every lint rule in your project.
+
+Disable either formatter, or both, even when installed:
+
+```sh
+get_sql_types --no-sqlfluff --no-ruff
+```
+
+This example assumes the required paths and connection string are set through
+environment variables. Alternatively, set `TYPED_PSYCO_SQLFLUFF=false` and/or
+`TYPED_PSYCO_RUFF=false`. Boolean environment settings accept `true`/`false`,
+`1`/`0`, `yes`/`no`, and `on`/`off` (case-insensitive); empty means the default,
+enabled if installed. `--sqlfluff` and `--ruff` override a disabling environment
+setting, but do not require or install missing tools. Installed formatter
+failures are reported as generation errors rather than silently ignored.
+
+In the Python API, use `Config(..., sqlfluff=False, ruff=False)` to disable both.
 
 ## Python API and custom PostgreSQL types
 
@@ -265,9 +305,9 @@ Custom types must be importable module-level classes.
   cannot fully describe outer joins or other SQL semantics: review generated types.
 - Statements with no result columns receive no result model. Async fetch helpers
   are for row-returning statements; execute no-result statements via psycopg.
-- SQLFluff uses PostgreSQL/raw templating, local configuration, and only layout/
-  capitalisation rules. Ruff formats the generated Python independently of local
-  formatting configuration. Both tools are declared dependencies.
+- SQLFluff and Ruff are optional and independently configurable; see
+  [Optional formatting](#optional-formatting). SQL formatting preserves selected-column
+  order so generated models and `unpack()` remain aligned.
 - Generation is repeatable. Existing model classes are retained, including stale
   classes, so failed/unsupported queries keep access to previously generated
   dependencies. No automatic pruning is performed.

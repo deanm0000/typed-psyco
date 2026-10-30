@@ -11,6 +11,10 @@ requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.2,<4",
     "pydantic>=2,<3",
+]
+
+[project.optional-dependencies]
+formatting = [
     "ruff>=0.9,<1",
     "sqlfluff>=3,<5",
 ]
@@ -19,7 +23,14 @@ dependencies = [
 get_sql_types = "typed_psyco.get_sql_types:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "pyright>=1.1.390", "build>=1"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pyright>=1.1.390",
+    "build>=1",
+    "ruff>=0.9,<1",
+    "sqlfluff>=3,<5",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/typed_psyco"]

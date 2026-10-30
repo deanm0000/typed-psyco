@@ -7,11 +7,10 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 
-import sqlfluff
 from pydantic import BaseModel
-from sqlfluff.core import FluffConfig
 
 from .introspection import Inspection, PythonType, placeholders
 
@@ -241,6 +240,8 @@ class TypeNames:
 
 def format_python(source: str) -> str:
     ast.parse(source)
+    if find_spec("ruff") is None:
+        return source
     result = subprocess.run(
         [
             sys.executable,
@@ -262,21 +263,28 @@ def format_python(source: str) -> str:
 
 
 def format_sql(query: str, directory: Path) -> str:
+    if find_spec("sqlfluff") is None:
+        return query
+    import sqlfluff
+    from sqlfluff.core import FluffConfig
+    from sqlfluff.core.errors import SQLFluffUserError
+
     text, replacements = placeholders(query, formatting=True)
-    config = FluffConfig.from_path(
-        str(directory),
-        overrides={
-            "dialect": "postgres",
-            "templater": "raw",
-            "rules": "LT01,LT02,LT04,LT05,LT09,CP01,CP03",
-            "fix_even_unparsable": False,
-        },
-    )
-    # Only layout/capitalisation rules: never reorder selected columns or aliases.
-    fixed = sqlfluff.fix(
-        text,
-        config=config,
-    ).strip("\n")
+    try:
+        config = FluffConfig.from_path(
+            str(directory),
+            overrides={
+                "dialect": "postgres",
+                "templater": "raw",
+                "rules": "LT01,LT02,LT04,LT05,LT09,CP01,CP03",
+                "exclude_rules": "ST06",
+                "fix_even_unparsable": False,
+            },
+        )
+        # ST06 reorders SELECT targets, breaking model and unpack() field order.
+        fixed = sqlfluff.fix(text, config=config).strip("\n")
+    except SQLFluffUserError as error:
+        raise ValueError(f"SQLFluff formatting failed: {error}") from error
     if replacements:
         fixed = re.sub(
             r"\$\d+\b",
@@ -361,6 +369,8 @@ def render(
     models_module: str,
     old_models: str,
     directory: Path,
+    use_sqlfluff: bool = True,
+    use_ruff: bool = True,
 ) -> Rendered:
     errors = discovery.errors | inspection.errors
     queries = {}
@@ -445,7 +455,11 @@ def render(
             else:
                 append_models.append(block)
         try:
-            formatted = format_sql(definition.query, directory)
+            formatted = (
+                format_sql(definition.query, directory)
+                if use_sqlfluff
+                else definition.query
+            )
             params = [source_types.annotation(value) for value in info.parameters]
         except ValueError as error:
             errors[name] = str(error)
@@ -505,8 +519,8 @@ def render(
         [line for line in model_imports if line not in existing_models_imports],
     )
     return Rendered(
-        format_python(rewritten),
-        format_python(models_source),
+        format_python(rewritten) if use_ruff else rewritten,
+        format_python(models_source) if use_ruff else models_source,
         tuple(successful),
         errors,
     )

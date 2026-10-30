@@ -2,10 +2,12 @@ import ast
 import importlib.util
 import sys
 from datetime import datetime
+from importlib.util import find_spec
+from unittest.mock import patch
 
 import pytest
 
-from typed_psyco.generation import discover, format_sql, render
+from typed_psyco.generation import discover, format_python, format_sql, render
 from typed_psyco.introspection import Column, Inspection, QueryInfo, placeholders
 
 
@@ -245,13 +247,85 @@ def test_unicode_offsets(tmp_path):
 
 def test_local_sqlfluff_config_cannot_reorder_columns(tmp_path):
     (tmp_path / ".sqlfluff").write_text(
-        "[sqlfluff]\ndialect = ansi\nrules = ST06\n"
+        "[sqlfluff]\ndialect = ansi\nrules = all\n"
         "[sqlfluff:rules:capitalisation.keywords]\ncapitalisation_policy = upper\n"
     )
     query = "select b + a, a, * from t"
     formatted = format_sql(query, tmp_path)
     assert formatted.upper().index("B + A") < formatted.upper().index("A,")
     assert formatted.index("*") > formatted.upper().index("A,")
+
+
+@pytest.mark.parametrize("sqlfluff_available", [False, True])
+@pytest.mark.parametrize("ruff_available", [False, True])
+def test_optional_formatters(tmp_path, sqlfluff_available, ruff_available):
+    available = {"sqlfluff": sqlfluff_available, "ruff": ruff_available}
+    specs = {
+        name: find_spec(name) if enabled else None
+        for name, enabled in available.items()
+    }
+    source = "from typed_psyco import SQL\nq = SQL('select  1 as id')\n"
+    with patch("typed_psyco.generation.find_spec", side_effect=specs.__getitem__):
+        result = rendered(source, {"q": QueryInfo((), (Column("id", int),))}, tmp_path)
+    assert result.successful == ("q",)
+    tree = ast.parse(result.source)
+    assignment = next(node for node in tree.body if isinstance(node, ast.Assign))
+    query = ast.literal_eval(assignment.value.args[0])
+    assert query == (
+        format_sql("select  1 as id", tmp_path)
+        if sqlfluff_available
+        else "select  1 as id"
+    )
+    assert ('SQL("' in result.source) is ruff_available
+    model = load_models(result.models_source, tmp_path).QQuery
+    assert model(id=1).unpack() == (1,)
+    with patch("typed_psyco.generation.find_spec", side_effect=specs.__getitem__):
+        second = rendered(
+            result.source,
+            {"q": QueryInfo((), (Column("id", int),))},
+            tmp_path,
+            old_models=result.models_source,
+        )
+    assert second.source == result.source
+    assert second.models_source == result.models_source
+
+
+def test_missing_formatters_preserve_input(tmp_path):
+    source = "x=  1\n"
+    query = "select  %s::int as id"
+    with (
+        patch("typed_psyco.generation.find_spec", return_value=None),
+        patch("typed_psyco.generation.subprocess.run") as run,
+    ):
+        assert format_python(source) == source
+        assert format_sql(query, tmp_path) == query
+    run.assert_not_called()
+
+
+def test_ruff_failure_is_not_ignored():
+    import subprocess
+
+    error = subprocess.CalledProcessError(1, ["ruff", "format"])
+    with patch("typed_psyco.generation.subprocess.run", side_effect=error):
+        with pytest.raises(subprocess.CalledProcessError):
+            format_python("x = 1\n")
+
+
+def test_render_preserves_column_and_unpack_order(tmp_path):
+    (tmp_path / ".sqlfluff").write_text("[sqlfluff]\nrules = ST06\n")
+    query = "select 1 + 2 as total, 7 as id"
+    info = {"q": QueryInfo((), (Column("total", int), Column("id", int)))}
+    result = rendered(
+        f"from typed_psyco import SQL\nq = SQL({query!r})\n", info, tmp_path
+    )
+    assignment = next(
+        node for node in ast.parse(result.source).body if isinstance(node, ast.Assign)
+    )
+    formatted = ast.literal_eval(assignment.value.args[0]).lower()
+    assert formatted.index("total") < formatted.index("id")
+    model = load_models(result.models_source, tmp_path).QQuery
+    assert list(model.model_fields) == ["total", "id"]
+    assert model(total=3, id=7).unpack() == (3, 7)
 
 
 def test_existing_rebound_import_does_not_break_parameter_types(tmp_path):
